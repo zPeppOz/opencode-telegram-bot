@@ -1,27 +1,77 @@
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
 import type { Context } from "grammy";
-import { InlineKeyboard } from "grammy";
 import { opencode } from "../../opencode/client.js";
 import { getState, setState } from "../../services/session.js";
+import { config } from "../../config.js";
+import { projectsKeyboard } from "../keyboards/projects.js";
+
+function resolveDir(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) return resolve(homedir(), trimmed.slice(2));
+  return resolve(trimmed);
+}
+
+export function shortenDir(dir: string): string {
+  return dir.replace(new RegExp(`^${homedir()}/`), "~/");
+}
+
+export function listSubdirectories(baseDir: string): string[] {
+  try {
+    const entries = readdirSync(baseDir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => join(baseDir, e.name))
+      .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  } catch {
+    return [];
+  }
+}
 
 export async function projectCommand(ctx: Context): Promise<void> {
-  const sessions = await opencode.listSessions();
-  const dirs = [...new Set(sessions.map((s) => s.directory))].sort();
-  const state = getState(ctx.from!.id);
+  const userId = ctx.from!.id;
 
-  if (dirs.length === 0) {
-    await ctx.reply("No projects found. Create a session first with /new.");
+  const text = ctx.message?.text ?? "";
+  const arg = text.replace(/^\/project\s*/, "").trim();
+
+  if (arg) {
+    const dir = resolveDir(arg);
+
+    if (!existsSync(dir)) {
+      try {
+        mkdirSync(dir, { recursive: true });
+      } catch (err) {
+        await ctx.reply(`❌ Cannot create directory: \`${dir}\`\n${String(err)}`);
+        return;
+      }
+    }
+
+    setState(userId, { activeDirectory: dir, activeSessionId: null });
+    const shortDir = shortenDir(dir);
+    await ctx.reply(
+      `✅ Switched to *${shortDir}*\n\nUse /new to create a session in this project, or /sessions to see existing ones.`,
+      { parse_mode: "Markdown" }
+    );
     return;
   }
 
-  const kb = new InlineKeyboard();
-  for (const dir of dirs.slice(0, 20)) {
-    const isCurrent = dir === state.activeDirectory;
-    const prefix = isCurrent ? "✅ " : "";
-    const shortDir = dir.replace(/^\/home\/[^/]+\//, "~/");
-    kb.text(`${prefix}${shortDir}`, `project:select:${dir}`).row();
+  const baseDir = config.opencode.defaultDir;
+  const dirs = listSubdirectories(baseDir);
+  const state = getState(userId);
+
+  if (dirs.length === 0) {
+    await ctx.reply("No directories found. Use `/project ~/path` to set a directory manually.", {
+      parse_mode: "Markdown",
+    });
+    return;
   }
 
-  await ctx.reply("📁 *Select a project directory:*", {
+  const kb = projectsKeyboard(dirs, state.activeDirectory, shortenDir, 0);
+
+  const shortBase = shortenDir(baseDir);
+  await ctx.reply(`📁 *Directories in* \`${shortBase}\`\n\nOr use \`/project ~/path\` to set a custom directory.`, {
     parse_mode: "Markdown",
     reply_markup: kb,
   });

@@ -5,6 +5,7 @@ const HELP_TEXT = `*OpenCode Telegram Bot — Commands*
 *Session Management*
 /new — Create a new coding session
 /sessions — Browse and resume sessions
+/history — Load session messages (default 50, /history 100)
 /fork — Fork current session
 /share — Get shareable link
 /compact — Summarize to save tokens
