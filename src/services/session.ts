@@ -1,6 +1,6 @@
 import { config } from "../config.js";
 
-interface UserState {
+export interface UserState {
   activeSessionId: string | null;
   activeDirectory: string;
   selectedModel: { providerID: string; modelID: string } | null;
