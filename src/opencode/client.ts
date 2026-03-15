@@ -32,7 +32,9 @@ class OpenCodeClient {
       const body = await res.text().catch(() => "");
       throw new Error(`OpenCode API ${res.status}: ${path} - ${body}`);
     }
-    return res.json() as Promise<T>;
+    const text = await res.text();
+    if (!text) return undefined as T;
+    return JSON.parse(text) as T;
   }
 
   async isHealthy(): Promise<boolean> {

@@ -21,11 +21,20 @@ export interface OcMessagePart {
   id: string;
   sessionID: string;
   messageID: string;
-  type: "text" | "step-start" | "step-finish" | "tool-invocation" | "tool-result";
+  type: "text" | "step-start" | "step-finish" | "tool" | "reasoning" | "snapshot" | "subtask";
   text?: string;
-  toolName?: string;
-  args?: Record<string, unknown>;
-  result?: string;
+  snapshot?: string;
+  tool?: string;
+  callID?: string;
+  state?: {
+    status: "pending" | "running" | "completed" | "error";
+    input?: unknown;
+    output?: string;
+    title?: string;
+    metadata?: Record<string, unknown>;
+    error?: string;
+    time?: { start: number; end: number };
+  };
   reason?: string;
   cost?: number;
   tokens?: OcTokens;
@@ -106,4 +115,30 @@ export interface OcEvent {
   type: string;
   properties?: Record<string, unknown>;
   sessionID?: string;
+}
+
+export interface OcMessagePartEvent extends OcEvent {
+  type:
+    | "message.updated"
+    | "message.removed"
+    | "message.part.updated"
+    | "message.part.delta"
+    | "message.part.removed";
+  properties: {
+    sessionID: string;
+    messageID: string;
+    part?: OcMessagePart;
+    delta?: { type: "text"; content: string };
+    info?: OcMessageInfo;
+    [key: string]: unknown;
+  };
+}
+
+export interface OcSessionEvent extends OcEvent {
+  type:
+    | "session.created"
+    | "session.updated"
+    | "session.deleted"
+    | "session.status"
+    | "session.error";
 }
