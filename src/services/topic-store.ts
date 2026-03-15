@@ -48,7 +48,9 @@ export function initTopicStore(): void {
       const count = Object.keys(data.bySession).length;
       logger.info("Topic store loaded", { count });
     } catch (err) {
-      logger.warn("Failed to load topic store, starting fresh", { error: String(err) });
+      logger.warn("Failed to load topic store, starting fresh", {
+        error: String(err),
+      });
       data = { bySession: {}, byTopic: {} };
     }
   }
@@ -76,7 +78,10 @@ export function getTopicForSession(sessionId: string): TopicEntry | undefined {
   return data.bySession[sessionId];
 }
 
-export function getSessionForTopic(chatId: number, topicId: number): string | undefined {
+export function getSessionForTopic(
+  chatId: number,
+  topicId: number,
+): string | undefined {
   return data.byTopic[topicKey(chatId, topicId)];
 }
 
@@ -118,5 +123,5 @@ export function hasAnyTopics(): boolean {
 export function formatTopicName(directory: string, title: string): string {
   const parts = directory.replace(/\/+$/, "").split("/");
   const project = parts[parts.length - 1] || "project";
-  return `${project} ${title}`.slice(0, 128);
+  return `[${project.toUpperCase()}] - ${title}`.slice(0, 128);
 }
