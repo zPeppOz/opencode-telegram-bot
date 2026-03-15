@@ -461,7 +461,13 @@ async function handleAction(ctx: Context, userId: number, parts: string[]): Prom
                   reply_markup: messageActionsKeyboard(sessionId, lastAssistant.info.id),
                 });
               } catch {
-                // action buttons are non-critical
+              }
+              try {
+                await api.sendMessage(chatId, "⚙️", {
+                  message_thread_id: threadId,
+                  reply_markup: switcherKeyboard(),
+                });
+              } catch {
               }
             }
           }
@@ -546,5 +552,165 @@ async function handlePermission(ctx: Context, _userId: number, parts: string[]):
   } catch (err) {
     logger.error("Permission response error", { error: String(err) });
     await ctx.answerCallbackQuery({ text: "Failed to respond" });
+  }
+}
+
+// ── Switcher callbacks (sw:) ───────────────────────────────
+
+async function loadAgentList(): Promise<{ name: string; id: string }[]> {
+  const cfg = await opencode.getConfig();
+  const agents: { name: string; id: string }[] = [
+    { name: "Build (default)", id: "build" },
+    { name: "Plan (read-only)", id: "plan" },
+  ];
+  if (cfg.agent && typeof cfg.agent === "object") {
+    for (const [id] of Object.entries(cfg.agent)) {
+      if (id !== "build" && id !== "plan") {
+        agents.push({ name: id, id });
+      }
+    }
+  }
+  return agents;
+}
+
+async function handleSwitcher(ctx: Context, userId: number, parts: string[]): Promise<void> {
+  const category = parts[1];
+
+  if (category === "back") {
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText("⚙️", {
+      reply_markup: switcherKeyboard(),
+    });
+    return;
+  }
+
+  switch (category) {
+    case "model":
+      await handleSwitcherModel(ctx, userId, parts);
+      break;
+    case "variant":
+      await handleSwitcherVariant(ctx, userId, parts);
+      break;
+    case "agent":
+      await handleSwitcherAgent(ctx, userId, parts);
+      break;
+    default:
+      await ctx.answerCallbackQuery({ text: "Unknown switcher action" });
+  }
+}
+
+async function handleSwitcherModel(ctx: Context, userId: number, parts: string[]): Promise<void> {
+  const action = parts[2];
+
+  switch (action) {
+    case "providers": {
+      const page = Number(parts[3] ?? 0);
+      const providersData = await opencode.getProviders();
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText("🤖 Select a provider:", {
+        reply_markup: switcherProvidersKeyboard(providersData.providers, page),
+      });
+      break;
+    }
+
+    case "provider": {
+      const providerId = parts[3]!;
+      const page = Number(parts[4] ?? 0);
+      const providersData = await opencode.getProviders();
+      const provider = providersData.providers.find((p) => p.id === providerId);
+      if (!provider) {
+        await ctx.answerCallbackQuery({ text: "Provider not found" });
+        return;
+      }
+      const state = getState(userId);
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText(`🤖 ${provider.name} — select a model:`, {
+        reply_markup: switcherModelsKeyboard(provider, state.selectedModel?.modelID, page),
+      });
+      break;
+    }
+
+    case "select": {
+      const providerId = parts[3]!;
+      const modelId = parts.slice(4).join(":");
+      setState(userId, { selectedModel: { providerID: providerId, modelID: modelId } });
+      await ctx.answerCallbackQuery({ text: `Model: ${modelId}` });
+      await ctx.editMessageText(`✅ Model set to \`${providerId}/${modelId}\``, {
+        parse_mode: "Markdown",
+        reply_markup: switcherKeyboard(),
+      });
+      break;
+    }
+
+    default:
+      await ctx.answerCallbackQuery({ text: "Unknown model action" });
+  }
+}
+
+async function handleSwitcherVariant(ctx: Context, userId: number, parts: string[]): Promise<void> {
+  const action = parts[2];
+
+  switch (action) {
+    case "list": {
+      const page = Number(parts[3] ?? 0);
+      const providersData = await opencode.getProviders();
+      const state = getState(userId);
+      const variants = extractVariants(providersData.providers, state.selectedModel?.modelID);
+      if (variants.length === 0) {
+        await ctx.answerCallbackQuery({ text: "No variants available" });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText("🔀 Select a variant:", {
+        reply_markup: switcherVariantsKeyboard(variants, state.selectedModel?.modelID, page),
+      });
+      break;
+    }
+
+    case "select": {
+      const providerId = parts[3]!;
+      const modelId = parts.slice(4).join(":");
+      setState(userId, { selectedModel: { providerID: providerId, modelID: modelId } });
+      await ctx.answerCallbackQuery({ text: `Variant: ${modelId}` });
+      await ctx.editMessageText(`✅ Model set to \`${providerId}/${modelId}\``, {
+        parse_mode: "Markdown",
+        reply_markup: switcherKeyboard(),
+      });
+      break;
+    }
+
+    default:
+      await ctx.answerCallbackQuery({ text: "Unknown variant action" });
+  }
+}
+
+async function handleSwitcherAgent(ctx: Context, userId: number, parts: string[]): Promise<void> {
+  const action = parts[2];
+
+  switch (action) {
+    case "list": {
+      const page = Number(parts[3] ?? 0);
+      const agents = await loadAgentList();
+      const state = getState(userId);
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText("🧠 Select an agent:", {
+        reply_markup: switcherAgentsKeyboard(agents, state.selectedAgent, page),
+      });
+      break;
+    }
+
+    case "select": {
+      const agentId = parts[3]!;
+      setState(userId, { selectedAgent: agentId });
+      await ctx.answerCallbackQuery({ text: `Agent: ${agentId}` });
+      await ctx.editMessageText(`✅ Agent set to *${agentId}*`, {
+        parse_mode: "Markdown",
+        reply_markup: switcherKeyboard(),
+      });
+      break;
+    }
+
+    default:
+      await ctx.answerCallbackQuery({ text: "Unknown agent action" });
   }
 }

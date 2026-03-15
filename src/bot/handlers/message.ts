@@ -4,6 +4,7 @@ import { getState, setState } from "../../services/session.js";
 import { getSessionFromContext } from "../middleware/thread.js";
 import { startStream, sendFinalMessage, cancelStream, getThinkingMessageId } from "../../services/streaming.js";
 import { messageActionsKeyboard } from "../keyboards/actions.js";
+import { switcherKeyboard } from "../keyboards/switcher.js";
 import { logger } from "../../utils/logger.js";
 
 export async function messageHandler(ctx: Context): Promise<void> {
@@ -63,7 +64,13 @@ export async function messageHandler(ctx: Context): Promise<void> {
               reply_markup: messageActionsKeyboard(sessionId, lastAssistant.info.id),
             });
           } catch {
-            // action buttons are non-critical
+          }
+          try {
+            await api.sendMessage(chatId, "\u2699\uFE0F", {
+              message_thread_id: threadId,
+              reply_markup: switcherKeyboard(),
+            });
+          } catch {
           }
         }
       }
