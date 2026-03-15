@@ -5,6 +5,114 @@ export function escapeMarkdown(text: string): string {
   return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
 }
 
+/** Escape HTML special characters for Telegram HTML parse mode */
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/**
+ * Convert Markdown to Telegram-compatible HTML.
+ *
+ * Handles: fenced code blocks, inline code, bold, italic, strikethrough,
+ * links, headings (→ bold), blockquotes, and horizontal rules.
+ * Nested/overlapping markup is handled on a best-effort basis.
+ */
+export function markdownToTelegramHtml(md: string): string {
+  // Split into fenced code blocks vs everything else.
+  // Pattern: ```lang?\n...``` (with optional language tag)
+  const segments: string[] = [];
+  const codeBlockRe = /```(\w*)\n?([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = codeBlockRe.exec(md)) !== null) {
+    // Text before this code block
+    if (match.index > lastIndex) {
+      segments.push(convertInlineMarkdown(md.slice(lastIndex, match.index)));
+    }
+    // Code block — escape HTML inside, wrap in <pre><code>
+    const lang = match[1];
+    const code = escapeHtml(match[2]!);
+    if (lang) {
+      segments.push(`<pre><code class="language-${escapeHtml(lang)}">${code}</code></pre>`);
+    } else {
+      segments.push(`<pre>${code}</pre>`);
+    }
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Remaining text after last code block
+  if (lastIndex < md.length) {
+    segments.push(convertInlineMarkdown(md.slice(lastIndex)));
+  }
+
+  return segments.join("");
+}
+
+/** Convert inline Markdown (everything except fenced code blocks) to Telegram HTML */
+function convertInlineMarkdown(text: string): string {
+  // Inline code — protect first so inner markup isn't processed
+  const inlineCodePlaceholders: string[] = [];
+  text = text.replace(/`([^`]+)`/g, (_m, code: string) => {
+    const idx = inlineCodePlaceholders.length;
+    inlineCodePlaceholders.push(`<code>${escapeHtml(code)}</code>`);
+    return `\x00IC${idx}\x00`;
+  });
+
+  // Escape HTML entities in the remaining text
+  text = escapeHtml(text);
+
+  // Headings: ### Heading → bold line
+  text = text.replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>");
+
+  // Blockquotes: > text → <blockquote>
+  // Merge consecutive blockquote lines
+  text = text.replace(
+    /(?:^&gt;\s?(.*)$\n?)+/gm,
+    (block) => {
+      const inner = block
+        .split("\n")
+        .map((line) => line.replace(/^&gt;\s?/, ""))
+        .join("\n")
+        .trim();
+      return `<blockquote>${inner}</blockquote>\n`;
+    },
+  );
+
+  // Horizontal rules
+  text = text.replace(/^[-*_]{3,}$/gm, "———");
+
+  // Bold + italic: ***text*** or ___text___
+  text = text.replace(/\*{3}(.+?)\*{3}/g, "<b><i>$1</i></b>");
+  text = text.replace(/_{3}(.+?)_{3}/g, "<b><i>$1</i></b>");
+
+  // Bold: **text** or __text__
+  text = text.replace(/\*{2}(.+?)\*{2}/g, "<b>$1</b>");
+  text = text.replace(/_{2}(.+?)_{2}/g, "<b>$1</b>");
+
+  // Italic: *text* or _text_
+  // Avoid matching mid-word underscores (e.g. some_var_name)
+  text = text.replace(/\*(.+?)\*/g, "<i>$1</i>");
+  text = text.replace(/(?<!\w)_(.+?)_(?!\w)/g, "<i>$1</i>");
+
+  // Strikethrough: ~~text~~
+  text = text.replace(/~~(.+?)~~/g, "<s>$1</s>");
+
+  // Links: [text](url)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+  // Unordered list markers: - item or * item → • item
+  text = text.replace(/^(\s*)[-*]\s+/gm, "$1• ");
+
+  // Restore inline code placeholders
+  text = text.replace(/\x00IC(\d+)\x00/g, (_m, idx: string) => inlineCodePlaceholders[Number(idx)]!);
+
+  return text;
+}
+
 /** Split a long message into chunks that fit Telegram's limit */
 export function splitMessage(text: string, maxLen = MAX_TG_LENGTH): string[] {
   if (text.length <= maxLen) return [text];
