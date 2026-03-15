@@ -1,16 +1,20 @@
 import { config } from "./config.js";
 import { setLogLevel, logger } from "./utils/logger.js";
 import { initAuthStore } from "./services/auth-store.js";
+import { initTopicStore } from "./services/topic-store.js";
 import { startServer, stopServer } from "./opencode/server.js";
 import { events } from "./opencode/events.js";
 import { registerPermissionHandler } from "./bot/handlers/permission.js";
+import { registerTopicSyncHandler } from "./bot/handlers/topic-sync.js";
 import { createBot } from "./bot/bot.js";
+import { setupBot } from "./bot/setup.js";
 
 async function main(): Promise<void> {
   setLogLevel(config.logLevel);
   logger.info("Starting OpenCode Telegram Bot");
 
   initAuthStore();
+  initTopicStore();
 
   if (config.opencode.autoStart) {
     await startServer();
@@ -18,7 +22,10 @@ async function main(): Promise<void> {
 
   const bot = createBot();
 
+  await setupBot(bot);
+
   await events.start();
+  registerTopicSyncHandler(bot.api);
   logger.info("SSE event listener started");
 
   if (config.telegram.allowedUsers.length > 0) {

@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { errorMiddleware } from "./middleware/error.js";
 import { rateLimitMiddleware } from "./middleware/rate-limit.js";
+import { threadMiddleware, threadTransformer } from "./middleware/thread.js";
 import { startCommand } from "./commands/start.js";
 import { helpCommand } from "./commands/help.js";
 import { sessionsCommand, newSessionCommand } from "./commands/sessions.js";
@@ -18,13 +19,17 @@ import {
   statsCommand,
 } from "./commands/actions.js";
 import { authCommand, grantCommand, revokeCommand, whoamiCommand } from "./commands/auth.js";
+import { historyCommand } from "./commands/history.js";
 import { callbackHandler } from "./handlers/callback.js";
 import { messageHandler } from "./handlers/message.js";
 
 export function createBot(): Bot {
   const bot = new Bot(config.telegram.token);
 
+  bot.api.config.use(threadTransformer);
+
   bot.use(errorMiddleware);
+  bot.use(threadMiddleware);
   bot.use(rateLimitMiddleware);
   bot.use(authMiddleware);
 
@@ -46,6 +51,7 @@ export function createBot(): Bot {
   bot.command("fork", forkCommand);
   bot.command("compact", compactCommand);
   bot.command("stats", statsCommand);
+  bot.command("history", historyCommand);
 
   bot.on("callback_query:data", callbackHandler);
   bot.on("message:text", messageHandler);

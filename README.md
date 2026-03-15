@@ -14,6 +14,8 @@ This bot connects to an OpenCode headless server running on your machine and exp
 - **Permission handling** — approve/deny tool calls and file writes via inline buttons
 - **Server lifecycle** — auto-start/stop the OpenCode server, health monitoring
 - **Cost tracking** — token usage and cost stats per session
+- **Auto-setup** — bot registers its command menu, description, and profile automatically on startup
+- **Forum topic support** — works in Telegram groups with topics enabled, replies stay in the correct thread
 
 ## Architecture
 
@@ -175,6 +177,25 @@ The bot maintains an SSE connection to `GET /event` on the OpenCode server for r
 
 When OpenCode needs approval (file write, shell command, etc.), the bot pushes an inline keyboard with Approve/Deny buttons. The user taps to respond and OpenCode continues.
 
+### Auto-Setup
+
+On startup the bot automatically configures itself via the Telegram Bot API:
+
+- **Command menu** — registers all commands for BotFather's menu (private and group chats)
+- **Description** — sets the bot's "What can this bot do?" text shown to new users
+- **Short description** — sets the brief tagline shown in search results and sharing
+
+No manual BotFather configuration needed beyond creating the bot and getting the token.
+
+### Forum Topic Support
+
+The bot works in Telegram groups with **Topics** (forum mode) enabled. When a user sends a command or message inside a topic thread, all bot replies stay in that same thread. This is handled transparently via an API transformer — no special configuration required.
+
+Behavior:
+- In **private chats** — works normally, no threads
+- In **groups without topics** — works normally, replies to the group
+- In **groups with topics** — bot tracks the `message_thread_id` from each incoming message and injects it into all outgoing messages automatically
+
 ## Project Structure
 
 ```
@@ -183,6 +204,7 @@ src/
 ├── config.ts             # Environment config loader
 ├── bot/
 │   ├── bot.ts            # grammY bot setup, middleware chain
+│   ├── setup.ts          # Auto-configure commands, description on startup
 │   ├── commands/         # Command handlers
 │   │   ├── start.ts      # /start — welcome + status
 │   │   ├── help.ts       # /help — command reference
@@ -204,7 +226,8 @@ src/
 │   └── middleware/        # Middleware chain
 │       ├── auth.ts       # Auth-store check (allows /start, /auth through)
 │       ├── error.ts      # Global error handler
-│       └── rate-limit.ts # 30 req/min per user sliding window
+│       ├── rate-limit.ts # 30 req/min per user sliding window
+│       └── thread.ts     # Forum topic tracking + API transformer for thread-aware replies
 ├── opencode/
 │   ├── client.ts         # OpenCode HTTP API client
 │   ├── events.ts         # SSE event stream listener with reconnect

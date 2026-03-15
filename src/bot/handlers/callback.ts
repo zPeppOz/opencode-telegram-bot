@@ -2,8 +2,30 @@ import type { Context } from "grammy";
 import { opencode } from "../../opencode/client.js";
 import { getState, setState } from "../../services/session.js";
 import { logger } from "../../utils/logger.js";
+import {
+  getTopicForSession,
+  setTopicMapping,
+  removeSessionMapping,
+  updateTopicName,
+  formatTopicName,
+} from "../../services/topic-store.js";
+import { formatSessionMessages } from "../../services/formatter.js";
+import { startStream, sendFinalMessage, cancelStream, getThinkingMessageId } from "../../services/streaming.js";
 import { sessionsKeyboard, sessionActionsKeyboard } from "../keyboards/sessions.js";
 import { providersKeyboard, modelsKeyboard } from "../keyboards/models.js";
+import { projectsKeyboard } from "../keyboards/projects.js";
+import { messageActionsKeyboard } from "../keyboards/actions.js";
+import {
+  switcherKeyboard,
+  switcherProvidersKeyboard,
+  switcherModelsKeyboard,
+  switcherVariantsKeyboard,
+  switcherAgentsKeyboard,
+  extractVariants,
+} from "../keyboards/switcher.js";
+import { splitMessage } from "../../utils/telegram.js";
+import { config } from "../../config.js";
+import { listSubdirectories, shortenDir } from "../commands/actions.js";
 
 export async function callbackHandler(ctx: Context): Promise<void> {
   const data = ctx.callbackQuery?.data;
@@ -35,6 +57,9 @@ export async function callbackHandler(ctx: Context): Promise<void> {
       case "perm":
         await handlePermission(ctx, userId, parts);
         break;
+      case "sw":
+        await handleSwitcher(ctx, userId, parts);
+        break;
       case "noop":
         await ctx.answerCallbackQuery();
         break;
@@ -49,6 +74,81 @@ export async function callbackHandler(ctx: Context): Promise<void> {
 
 // ── Session callbacks ──────────────────────────────────────
 
+async function openOrCreateTopic(
+  ctx: Context,
+  sessionId: string,
+  sessionName: string,
+  directory: string,
+): Promise<number | null> {
+  const chatId = ctx.chat!.id;
+  const topicName = formatTopicName(directory, sessionName);
+
+  const existing = getTopicForSession(sessionId);
+  if (existing) {
+    try {
+      await ctx.api.reopenForumTopic(chatId, existing.topicId);
+    } catch {
+      // already open — fine
+    }
+    if (existing.name !== topicName) {
+      try {
+        await ctx.api.editForumTopic(chatId, existing.topicId, { name: topicName });
+        updateTopicName(sessionId, topicName);
+      } catch {
+        // non-critical
+      }
+    }
+    return existing.topicId;
+  }
+
+  try {
+    const topic = await ctx.api.createForumTopic(chatId, topicName, {
+      icon_color: 0x6FB9F0,
+    });
+    setTopicMapping(chatId, sessionId, topic.message_thread_id, topicName);
+    return topic.message_thread_id;
+  } catch (err) {
+    logger.error("Failed to create forum topic", { error: String(err) });
+    return null;
+  }
+}
+
+async function pushSessionHistory(
+  ctx: Context,
+  sessionId: string,
+  topicId: number,
+  limit = 20,
+): Promise<void> {
+  const chatId = ctx.chat!.id;
+
+  try {
+    const messages = await opencode.getMessages(sessionId);
+    const formatted = formatSessionMessages(messages, limit);
+
+    if (formatted.length === 0) {
+      await ctx.api.sendMessage(chatId, "📭 No messages in this session yet.", {
+        message_thread_id: topicId,
+      });
+      return;
+    }
+
+    for (const text of formatted) {
+      const chunks = splitMessage(text, config.stream.maxMessageLength);
+      for (const chunk of chunks) {
+        await ctx.api.sendMessage(chatId, chunk, {
+          message_thread_id: topicId,
+          parse_mode: "HTML",
+        });
+      }
+    }
+  } catch (err) {
+    logger.error("Failed to push session history", { error: String(err) });
+    await ctx.api.sendMessage(chatId, "⚠️ Could not load session history.", {
+      message_thread_id: topicId,
+    });
+  }
+}
+
 async function handleSession(ctx: Context, userId: number, parts: string[]): Promise<void> {
   const action = parts[1];
 
@@ -58,13 +158,26 @@ async function handleSession(ctx: Context, userId: number, parts: string[]): Pro
       setState(userId, { activeSessionId: sessionId });
       const session = await opencode.getSession(sessionId);
       await ctx.answerCallbackQuery({ text: `Resumed: ${session.slug}` });
-      await ctx.editMessageText(
-        `✅ Active session: *${session.title || session.slug}*\n📁 ${session.directory}`,
-        {
-          parse_mode: "Markdown",
-          reply_markup: sessionActionsKeyboard(sessionId),
-        }
-      );
+
+      const topicId = await openOrCreateTopic(ctx, sessionId, session.title || session.slug, session.directory);
+      if (topicId) {
+        await ctx.editMessageText(
+          `✅ Active session: *${session.title || session.slug}*\n📁 ${session.directory}\n\nOpened in topic thread.`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: sessionActionsKeyboard(sessionId),
+          },
+        );
+        await pushSessionHistory(ctx, sessionId, topicId);
+      } else {
+        await ctx.editMessageText(
+          `✅ Active session: *${session.title || session.slug}*\n📁 ${session.directory}\n\n⚠️ Could not create forum topic. Send messages here directly.`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: sessionActionsKeyboard(sessionId),
+          },
+        );
+      }
       break;
     }
 
@@ -83,10 +196,19 @@ async function handleSession(ctx: Context, userId: number, parts: string[]): Pro
       const session = await opencode.createSession(state.activeDirectory);
       setState(userId, { activeSessionId: session.id });
       await ctx.answerCallbackQuery({ text: "Session created" });
-      await ctx.editMessageText(
-        `✅ New session: *${session.title || session.slug}*\n\nSend me a message to start coding.`,
-        { parse_mode: "Markdown" }
-      );
+
+      const topicId = await openOrCreateTopic(ctx, session.id, session.title || session.slug, session.directory);
+      if (topicId) {
+        await ctx.editMessageText(
+          `✅ New session: *${session.title || session.slug}*\n\nSend your message in the topic thread to start coding.`,
+          { parse_mode: "Markdown" },
+        );
+      } else {
+        await ctx.editMessageText(
+          `✅ New session: *${session.title || session.slug}*\n\nSend me a message to start coding.`,
+          { parse_mode: "Markdown" },
+        );
+      }
       break;
     }
 
@@ -95,10 +217,20 @@ async function handleSession(ctx: Context, userId: number, parts: string[]): Pro
       const forked = await opencode.forkSession(sessionId);
       setState(userId, { activeSessionId: forked.id });
       await ctx.answerCallbackQuery({ text: "Session forked" });
-      await ctx.editMessageText(
-        `🔀 Forked: *${forked.title || forked.slug}*`,
-        { parse_mode: "Markdown" }
-      );
+
+      const topicId = await openOrCreateTopic(ctx, forked.id, forked.title || forked.slug, forked.directory);
+      if (topicId) {
+        await ctx.editMessageText(
+          `🔀 Forked: *${forked.title || forked.slug}*\n\nOpened in topic thread.`,
+          { parse_mode: "Markdown" },
+        );
+        await pushSessionHistory(ctx, forked.id, topicId);
+      } else {
+        await ctx.editMessageText(
+          `🔀 Forked: *${forked.title || forked.slug}*`,
+          { parse_mode: "Markdown" },
+        );
+      }
       break;
     }
 
@@ -125,6 +257,17 @@ async function handleSession(ctx: Context, userId: number, parts: string[]): Pro
     case "delete": {
       const sessionId = parts[2]!;
       const state = getState(userId);
+
+      const topicEntry = getTopicForSession(sessionId);
+      if (topicEntry) {
+        try {
+          await ctx.api.deleteForumTopic(topicEntry.chatId, topicEntry.topicId);
+        } catch (err) {
+          logger.debug("Failed to delete forum topic", { error: String(err) });
+        }
+        removeSessionMapping(sessionId);
+      }
+
       await opencode.deleteSession(sessionId);
       if (state.activeSessionId === sessionId) {
         setState(userId, { activeSessionId: null });
@@ -243,8 +386,20 @@ async function handleProject(ctx: Context, userId: number, parts: string[]): Pro
     await ctx.answerCallbackQuery({ text: `Project: ${shortDir}` });
     await ctx.editMessageText(
       `✅ Switched to *${shortDir}*\n\nUse /new to create a session in this project, or /sessions to see existing ones.`,
-      { parse_mode: "Markdown" }
+      { parse_mode: "Markdown" },
     );
+    return;
+  }
+
+  if (action === "page") {
+    const page = Number(parts[2]);
+    const baseDir = config.opencode.defaultDir;
+    const dirs = listSubdirectories(baseDir);
+    const state = getState(userId);
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageReplyMarkup({
+      reply_markup: projectsKeyboard(dirs, state.activeDirectory, shortenDir, page),
+    });
     return;
   }
 
@@ -273,19 +428,61 @@ async function handleAction(ctx: Context, userId: number, parts: string[]): Prom
         await ctx.answerCallbackQuery({ text: "Already processing..." });
         return;
       }
+
+      const chatId = ctx.chat!.id;
+      const threadId = ctx.callbackQuery?.message?.message_thread_id;
       await ctx.answerCallbackQuery({ text: "Continuing..." });
       setState(userId, { isBusy: true });
-      try {
-        const response = await opencode.sendMessage(sessionId, "continue", {
-          model: state.selectedModel ?? undefined,
-          agent: state.selectedAgent ?? undefined,
-        });
-        const { formatResponse } = await import("../../services/streaming.js");
-        const text = formatResponse(response);
-        await ctx.editMessageText(text.slice(0, 4096));
-      } finally {
+
+      const draftId = ctx.update.update_id;
+      const api = ctx.api;
+
+      // Fire-and-forget: avoid blocking grammY's update loop
+      const run = async () => {
+        try {
+          await opencode.sendMessageAsync(sessionId, "continue", {
+            model: state.selectedModel ?? undefined,
+            agent: state.selectedAgent ?? undefined,
+          });
+
+          await startStream(api, chatId, sessionId, draftId, threadId);
+
+          const thinkingMsgId = getThinkingMessageId(sessionId);
+          const messages = await opencode.getMessages(sessionId);
+          const lastAssistant = [...messages].reverse().find((m) => m.info.role === "assistant");
+
+          if (lastAssistant) {
+            const msgId = await sendFinalMessage(api, chatId, lastAssistant, threadId, thinkingMsgId);
+            if (msgId) {
+              setState(userId, { lastMessageId: msgId });
+              try {
+                await api.sendMessage(chatId, "💬", {
+                  message_thread_id: threadId,
+                  reply_markup: messageActionsKeyboard(sessionId, lastAssistant.info.id),
+                });
+              } catch {
+                // action buttons are non-critical
+              }
+            }
+          }
+        } catch (err) {
+          cancelStream(sessionId);
+          logger.error("Continue action error", { error: String(err), sessionId });
+          try {
+            await api.sendMessage(chatId, `❌ Error: ${err instanceof Error ? err.message : "Unknown error"}`, {
+              message_thread_id: threadId,
+            });
+          } catch {
+          }
+        } finally {
+          setState(userId, { isBusy: false });
+        }
+      };
+
+      run().catch((err) => {
+        logger.error("Background continue handler crashed", { error: String(err), sessionId });
         setState(userId, { isBusy: false });
-      }
+      });
       break;
     }
 
@@ -310,6 +507,16 @@ async function handleConfirm(ctx: Context, userId: number, parts: string[]): Pro
 
   switch (action) {
     case "delete": {
+      const topicEntry = getTopicForSession(id);
+      if (topicEntry) {
+        try {
+          await ctx.api.deleteForumTopic(topicEntry.chatId, topicEntry.topicId);
+        } catch (err) {
+          logger.debug("Failed to delete forum topic on confirm:delete", { error: String(err) });
+        }
+        removeSessionMapping(id);
+      }
+
       await opencode.deleteSession(id);
       if (state.activeSessionId === id) {
         setState(userId, { activeSessionId: null });
